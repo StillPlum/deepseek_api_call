@@ -1,0 +1,240 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DeepSeek Console</title>
+<style>
+  :root{
+    --bg:#070d18; --panel:#0f1726; --grad1:#13213d; --grad2:#0b1430;
+    --text:#eaf2ff; --muted:#9db1d9; --line:#223459; --accent:#4c7dff; --accent2:#7aa2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#16223c 0%,transparent 60%),var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:980px;margin:32px auto;padding:0 16px}
+  .panel{background:linear-gradient(180deg,var(--grad1),var(--grad2));border:1px solid var(--line);border-radius:20px;box-shadow:0 20px 80px rgba(0,0,0,.45);overflow:hidden}
+  .chat{height:64vh;min-height:460px;max-height:72vh;overflow:auto;padding:20px}
+  .row{display:flex;gap:12px;margin:12px 0;animation:fadeIn .25s ease}
+  .row.user{justify-content:flex-end}
+  .bubble{max-width:76%;padding:14px 16px;border-radius:16px;line-height:1.6;white-space:pre-wrap;word-break:break-word;backdrop-filter:blur(6px)}
+  .user .bubble{background:linear-gradient(180deg,#2b59ff,#3f7afe);color:#fff;border-bottom-right-radius:6px;box-shadow:0 8px 24px rgba(76,125,255,.35)}
+  .bot .bubble{background:rgba(23,36,66,.78);border:1px solid #27406f;border-bottom-left-radius:6px}
+  .footer{display:flex;gap:10px;padding:14px;border-top:1px solid var(--line);background:linear-gradient(0deg,#0f1726,#0d1524)}
+  .input{flex:1;display:flex;gap:10px;align-items:flex-end;flex-direction:column}
+  textarea{flex:1;width:100%;resize:none;background:#161f35;border:1px solid #243a66;color:var(--text);padding:12px 14px;border-radius:12px;min-height:48px;max-height:160px;outline:none}
+  .btn{background:linear-gradient(180deg,var(--accent),#3f6dff);border:1px solid #5f85ff;color:#fff;padding:12px 16px;border-radius:12px;font-weight:700;cursor:pointer;min-width:96px;transition:transform .15s ease, box-shadow .15s ease}
+  .btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(76,125,255,.35)}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .up{min-width:120px;background:linear-gradient(180deg,#26395e,#1c2b4c);border:1px dashed #35507f}
+  .up:hover{background:linear-gradient(180deg,#2b4270,#21365d)}
+  .drop{position:relative;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px dashed #35507f;border-radius:12px;background:#121a30;color:var(--muted);cursor:pointer;width:100%}
+  .drop.drag{outline:2px dashed var(--accent2);outline-offset:3px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;width:100%}
+  .chip{display:flex;gap:8px;align-items:center;background:#172647;border:1px solid #28406c;border-radius:999px;padding:6px 10px;font-size:12px}
+  .chip .remove{cursor:pointer;opacity:.8}
+  .thumb{width:22px;height:22px;object-fit:cover;border-radius:4px;border:1px solid #2b4472}
+  .typing{display:inline-block;width:36px;text-align:center;opacity:.9}
+  .dot{display:inline-block;width:6px;height:6px;margin:0 1px;border-radius:50%;background:#9db1d9;animation:bounce 1.2s infinite}
+  .dot:nth-child(2){animation-delay:.2s}
+  .dot:nth-child(3){animation-delay:.4s}
+  @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+  .row.error .bubble{background:#4a1f2a;border:1px solid #a63a52;color:#ffd9e1}
+  .bar{height:6px;background:#1a2543;border-radius:999px;overflow:hidden;margin-top:6px}
+  .bar > div{height:100%;width:0;background:linear-gradient(90deg,#4c7dff,#7aa2ff);transition:width .2s}
+</style>
+
+<div class="wrap">
+  <div class="panel">
+    <div id="chat" class="chat"></div>
+
+    <div class="footer">
+      <div class="input">
+        <label id="drop" class="drop">
+          <span>Drop files here or click to browse (images, PDF, Word, Excel, text)</span>
+          <input id="file" type="file" multiple hidden accept=".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp" />
+        </label>
+        <div id="chips" class="chips"></div>
+        <textarea id="msg" placeholder="Ask DeepSeek anything..."></textarea>
+      </div>
+      <button id="send" class="btn">Send</button>
+      <button id="upload" class="btn up">Upload Files</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = selector => document.querySelector(selector);
+const chat = $('#chat');
+const msg = $('#msg');
+const sendBtn = $('#send');
+const fileInput = $('#file');
+const uploadBtn = $('#upload');
+const drop = $('#drop');
+const chips = $('#chips');
+let queue = [];
+
+function bubble(role, text) {
+  const row = document.createElement('div');
+  row.className = `row ${role}`;
+  const box = document.createElement('div');
+  box.className = 'bubble';
+  box.textContent = text;
+  row.appendChild(box);
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function typingOn() {
+  const row = document.createElement('div');
+  row.className = 'row bot';
+  row.id = 'typing';
+  const box = document.createElement('div');
+  box.className = 'bubble';
+  box.innerHTML = '<span class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>';
+  row.appendChild(box);
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function typingOff() {
+  const node = document.getElementById('typing');
+  if (node) node.remove();
+}
+
+function addChip(file) {
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  let thumb;
+  if (file.type && file.type.startsWith('image/')) {
+    thumb = document.createElement('img');
+    thumb.className = 'thumb';
+    thumb.src = URL.createObjectURL(file);
+  } else {
+    thumb = document.createElement('div');
+    thumb.className = 'thumb';
+    thumb.style.display = 'grid';
+    thumb.style.placeItems = 'center';
+    thumb.style.fontSize = '10px';
+    thumb.textContent = (file.name.split('.').pop() || '').toUpperCase() || 'FILE';
+  }
+
+  const name = document.createElement('span');
+  name.textContent = file.name;
+
+  const remove = document.createElement('span');
+  remove.textContent = 'x';
+  remove.className = 'remove';
+  remove.onclick = () => {
+    queue = queue.filter(item => item !== file);
+    chip.remove();
+  };
+
+  chip.appendChild(thumb);
+  chip.appendChild(name);
+  chip.appendChild(remove);
+  chips.appendChild(chip);
+}
+
+function pushFiles(fileList) {
+  for (const file of fileList) {
+    queue.push(file);
+    addChip(file);
+  }
+}
+
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', event => {
+  event.preventDefault();
+  drop.classList.add('drag');
+});
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', event => {
+  event.preventDefault();
+  drop.classList.remove('drag');
+  pushFiles(event.dataTransfer.files);
+});
+fileInput.addEventListener('change', event => pushFiles(event.target.files));
+
+sendBtn.onclick = async () => {
+  const text = msg.value.trim();
+  if (!text) return;
+
+  msg.value = '';
+  bubble('user', text);
+  typingOn();
+  sendBtn.disabled = true;
+  uploadBtn.disabled = true;
+
+  try {
+    const response = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    const payload = await response.json();
+    typingOff();
+    if (payload.reply) {
+      bubble('bot', payload.reply);
+    } else {
+      bubble('error', 'Error: ' + (payload.error || 'unknown'));
+    }
+  } catch (error) {
+    typingOff();
+    bubble('error', 'Network error');
+  } finally {
+    sendBtn.disabled = false;
+    uploadBtn.disabled = false;
+  }
+};
+
+uploadBtn.onclick = async () => {
+  if (queue.length === 0 && !msg.value.trim()) {
+    bubble('error', 'Add files or type a note first');
+    return;
+  }
+
+  const form = new FormData();
+  for (const file of queue) form.append('files', file);
+  if (msg.value.trim()) form.append('message', msg.value.trim());
+  msg.value = '';
+
+  bubble('user', 'Uploading ' + queue.length + ' file(s)...');
+  const row = document.createElement('div');
+  row.className = 'row bot';
+  const box = document.createElement('div');
+  box.className = 'bubble';
+  box.innerHTML = 'Parsing files...<div class="bar"><div id="prog"></div></div>';
+  row.appendChild(box);
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+
+  const progress = box.querySelector('#prog');
+  let pct = 0;
+  const interval = setInterval(() => {
+    pct = Math.min(95, pct + 5);
+    progress.style.width = pct + '%';
+  }, 120);
+
+  sendBtn.disabled = true;
+  uploadBtn.disabled = true;
+
+  try {
+    const response = await fetch('/upload', { method: 'POST', body: form });
+    const payload = await response.json();
+    clearInterval(interval);
+    progress.style.width = '100%';
+    setTimeout(() => row.remove(), 300);
+    if (payload.reply) {
+      bubble('bot', payload.reply);
+    } else {
+      bubble('error', 'Error: ' + (payload.error || 'unknown'));
+    }
+  } catch (error) {
+    clearInterval(interval);
+    bubble('error', 'Upload failed');
+  } finally {
+    queue = [];
+    chips.innerHTML = '';
+    sendBtn.disabled = false;
+    uploadBtn.disabled = false;
+  }
+};
+</script>
